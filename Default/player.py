@@ -1,5 +1,3 @@
-from typing import List
-
 from property import Property
 
 PROPERTIES_ORDER = [6, 5, 4, 9, 3, 8, 2, 7, 1]

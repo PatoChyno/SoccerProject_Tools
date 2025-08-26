@@ -1,3 +1,6 @@
+import sqlite3
+from datetime import datetime, timedelta
+
 import requests
 from bs4 import BeautifulSoup
 
@@ -59,16 +62,105 @@ def submit_new_training(session, players):
     session.post(training_url(), data=payload)
 
 
+def is_simulation_running(page):
+    return page.find("form", attrs={"action": TRAINING_PATH}) is None
+
+
+def training_occurred_after_last_simulation():
+    conn = sqlite3.connect("last_training")
+    c = conn.cursor()
+    c.execute("select exists (select 1 from sqlite_master where type=\"table\" AND name=\"last_training\")")
+    conn.commit()
+    row = c.fetchone()
+    if row is None:
+        return False
+    table_exists = row[0]
+    if not table_exists:
+        return False
+    c.execute("select date_time from last_training")
+    conn.commit()
+    row = c.fetchone()
+    if row is None:
+        return False
+
+    date_time_string = row[0]
+    c.close()
+    conn.close()
+    if date_time_string is None:
+        return False
+
+    last_training_date_time = datetime.strptime(date_time_string, "%Y-%m-%d %H:%M:%S")
+    date_today = datetime.now().date()
+    date_yesterday = date_today - timedelta(days=1)
+    time_now = datetime.now().time()
+
+    if (last_training_date_time.date() < datetime.now().date()) and (
+            last_training_date_time.date() < date_yesterday):
+        return False
+
+    if last_training_date_time.date() == date_yesterday:
+        if last_training_date_time.time().hour < 22:
+            return False
+        if time_now.hour > 4:
+            return False
+
+    if last_training_date_time.date() == date_today:
+        hours = [5, 10, 14, 18, 22]
+        for hour in hours:
+            if last_training_date_time.time().hour < hour <= time_now.hour:
+                return False
+
+    return True
+
+
 def process_page(session, training_page):
+    if training_occurred_after_last_simulation():
+        answer = input("A training has already been run after the most recent simulation. Run again? [y]/n")
+        if not ((answer == "") or (answer.lower() == "y")):
+            return
+
+    if is_simulation_running(training_page):
+        print("The simulation is probably running, cannot set training at the moment")
+        return
+
+    print("Setting the training...")
     players = load_players(session, training_page)
     submit_new_training(session, players)
+    log_run_end_date_time()
+
+
+def save_run_time(run_date_time):
+    conn = sqlite3.connect("last_training")
+    c = conn.cursor()
+    c.execute('''create table if not exists last_training (date_time text)''')
+    c.execute("""select * from last_training""")
+    one_row = c.fetchone()
+    parameters = {"date_time": datetime.strftime(run_date_time, "%Y-%m-%d %H:%M:%S")}
+    if one_row is None:
+        c.execute("""insert into last_training values (:date_time)""",
+                  parameters)
+    else:
+        c.execute("""update last_training set date_time=:date_time""",
+                  parameters)
+    conn.commit()
+    c.close()
+    conn.close()
+
+
+def log_run_end_date_time():
+    now_date_time = datetime.now()
+    save_run_time(now_date_time)
+    formatted_date = now_date_time.strftime("%d %B %Y")
+    formatted_time = now_date_time.strftime("%H:%M")
+    print(f"Training set on {formatted_date} at {formatted_time}")
+    pass
 
 
 def run_app():
     session = requests.session()
-    login(session)
-    training_page = fetch_training_page(session)
-    process_page(session, training_page)
+    if login(session):
+        training_page = fetch_training_page(session)
+        process_page(session, training_page)
 
 
 def extract_player_data_from_link(link):
@@ -95,7 +187,12 @@ def login(session):
         "login": "PaToM",
         "password": "181113"
     }
-    session.post(login_url(), data=payload)
+    try:
+        session.post(login_url(), data=payload)
+        return True
+    except requests.ConnectionError:
+        print("Connection error (either the server is down or the computer is not connected to the internet)")
+        return False
 
 
 def login_url():
