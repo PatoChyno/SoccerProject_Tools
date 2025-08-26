@@ -1,3 +1,4 @@
 /training.bat
 /.venv/
 /.idea/
+/Default/__pycache__/
